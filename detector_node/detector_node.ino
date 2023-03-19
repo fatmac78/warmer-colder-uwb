@@ -1,34 +1,29 @@
 #include "dw3000.h"
 
-#define APP_NAME "SS TWR INIT v1.0"
+#define APP_NAME "Detector node"
 
 // connection pins
 const uint8_t PIN_RST = 27; // reset pin
 const uint8_t PIN_IRQ = 34; // irq pin
 const uint8_t PIN_SS = 4; // spi select pin
 
-const uint8_t PIN_WARM1 = 0; // warmer LED pin
-const uint8_t PIN_WARM2 = 33; // warmer LED pin
-const uint8_t PIN_WARM3 = 32; // warmer LED pin
+// leds pins
+const uint8_t PIN_WARM1 = 0; // warmer level 1 LED pin
+const uint8_t PIN_WARM2 = 33; // warmer level 2 LED pin
+const uint8_t PIN_WARM3 = 32; // warmer level 3 LED pin
+const uint8_t PIN_COLD1 = 2; // colder level 1 LED pin     
+const uint8_t PIN_COLD2 = 12; // colder level 2 LED pin     
+const uint8_t PIN_COLD3 = 13; // colder level 3 LED pin     
+const uint8_t PIN_DETECT = 25; // hidden node detected LED     
 
-const uint8_t PIN_COLD1 = 2; // colder LED pin     
-const uint8_t PIN_COLD2 = 12; // colder LED pin     
-const uint8_t PIN_COLD3 = 13; // colder LED pin     
-
-const uint8_t PIN_DETECT = 26; // colder LED pin     
-
-
-
-
-
-const uint8_t LED_HALF_CLOCK_CYCLE = 200; // colder LED pin
-
-static double old3_distance;
-static double old2_distance;
-static double old1_distance;
-static double new_distance;
-static double filtered_delta;
-
+// trigger thresholds
+const double WARM_THRESHOLD_1 = -0.1;
+const double WARM_THRESHOLD_2 = -0.3;
+const double WARM_THRESHOLD_3 = -0.6;
+const double COLD_THRESHOLD_1 = 0.1;
+const double COLD_THRESHOLD_2 = 0.3;
+const double COLD_THRESHOLD_3 = 0.6;
+const double PACKET_THRESHOLD = 0.7;
 
 /* Default communication configuration. We use default non-STS DW mode. */
 static dwt_config_t config = {
@@ -48,7 +43,7 @@ static dwt_config_t config = {
 };
 
 /* Inter-ranging delay period, in milliseconds. */
-#define RNG_DELAY_MS 500
+#define RNG_DELAY_MS 200
 
 /* Default antenna delay values for 64 MHz PRF. See NOTE 2 below. */
 #define TX_ANT_DLY 16385
@@ -99,238 +94,280 @@ static uint32_t status_reg = 0;
 #define POLL_TX_TO_RESP_RX_DLY_UUS 240
 #define RESP_RX_TIMEOUT_UUS 400
 
-
 /* Hold copies of computed time of flight and distance here for reference so that it can be examined at a debug breakpoint. */
 static double tof;
 static double distance;
+
+// global store distances
+static double new_distance;
+static double distance_n_minus_1;
+static double distance_n_minus_2;
+static double distance_n_minus_3;
+static double distance_n_minus_4;
+static double distance_n_minus_5;
+
+// global store pings
+static double filtered_ping;
+static int new_active_ping = 0;
+static int active_ping_n_minus_1 = 0;
+static int active_ping_n_minus_2 = 0;
+static int active_ping_n_minus_3 = 0;
+static int active_ping_n_minus_4 = 0;
+static int active_ping_n_minus_5 = 0;
 
 /* Values for the PG_DELAY and TX_POWER registers reflect the bandwidth and power of the spectrum at the current
  * temperature. These values can be calibrated prior to taking reference measurements. See NOTE 2 below. */
 extern dwt_txconfig_t txconfig_options;
 
 void setup() {
-
-  pinMode(PIN_WARM1, OUTPUT);
-  pinMode(PIN_WARM2, OUTPUT);
-  pinMode(PIN_WARM3, OUTPUT);
-
-  pinMode(PIN_COLD1, OUTPUT);
-  pinMode(PIN_COLD2, OUTPUT);
-  pinMode(PIN_COLD3, OUTPUT);
-
-
-  pinMode(PIN_DETECT, OUTPUT);
-
+    pinMode(PIN_WARM1, OUTPUT);
+    pinMode(PIN_WARM2, OUTPUT);
+    pinMode(PIN_WARM3, OUTPUT);
+    pinMode(PIN_COLD1, OUTPUT);
+    pinMode(PIN_COLD2, OUTPUT);
+    pinMode(PIN_COLD3, OUTPUT);
+    pinMode(PIN_DETECT, OUTPUT);
+    
+    UART_init();
+    test_run_info((unsigned char *)APP_NAME);
   
-  UART_init();
-  test_run_info((unsigned char *)APP_NAME);
-
-  /* Configure SPI rate, DW3000 supports up to 38 MHz */
-  /* Reset DW IC */
-  spiBegin(PIN_IRQ, PIN_RST);
-  spiSelect(PIN_SS);
-
-  delay(2); // Time needed for DW3000 to start up (transition from INIT_RC to IDLE_RC, or could wait for SPIRDY event)
-
-  while (!dwt_checkidlerc()) // Need to make sure DW IC is in IDLE_RC before proceeding 
-  {
-    UART_puts("IDLE FAILED\r\n");
-    while (1) ;
-  }
-
-  if (dwt_initialise(DWT_DW_INIT) == DWT_ERROR)
-  {
-    UART_puts("INIT FAILED\r\n");
-    while (1) ;
-  }
-
-  // Enabling LEDs here for debug so that for each TX the D1 LED will flash on DW3000 red eval-shield boards.
-  dwt_setleds(DWT_LEDS_ENABLE | DWT_LEDS_INIT_BLINK);
-
-  /* Configure DW IC. See NOTE 6 below. */
-  if(dwt_configure(&config)) // if the dwt_configure returns DWT_ERROR either the PLL or RX calibration has failed the host should reset the device
-  {
-    UART_puts("CONFIG FAILED\r\n");
-    while (1) ;
-  }
-
+    /* Configure SPI rate, DW3000 supports up to 38 MHz */
+    /* Reset DW IC */
+    spiBegin(PIN_IRQ, PIN_RST);
+    spiSelect(PIN_SS);
+  
+    delay(2); // Time needed for DW3000 to start up (transition from INIT_RC to IDLE_RC, or could wait for SPIRDY event)
+  
+    while (!dwt_checkidlerc()) // Need to make sure DW IC is in IDLE_RC before proceeding 
+    {
+      UART_puts("IDLE FAILED\r\n");
+      while (1) ;
+    }
+  
+    if (dwt_initialise(DWT_DW_INIT) == DWT_ERROR)
+    {
+      UART_puts("INIT FAILED\r\n");
+      while (1) ;
+    }
+  
+    // Enabling LEDs here for debug so that for each TX the D1 LED will flash on DW3000 red eval-shield boards.
+    dwt_setleds(DWT_LEDS_ENABLE | DWT_LEDS_INIT_BLINK);
+  
+    /* Configure DW IC. See NOTE 6 below. */
+    if(dwt_configure(&config)) // if the dwt_configure returns DWT_ERROR either the PLL or RX calibration has failed the host should reset the device
+    {
+      UART_puts("CONFIG FAILED\r\n");
+      while (1) ;
+    }
+  
     /* Configure the TX spectrum parameters (power, PG delay and PG count) */
     dwt_configuretxrf(&txconfig_options);
-
+  
     /* Apply default antenna delay value. See NOTE 2 below. */
     dwt_setrxantennadelay(RX_ANT_DLY);
     dwt_settxantennadelay(TX_ANT_DLY);
-
+  
     /* Set expected response's delay and timeout. See NOTE 1 and 5 below.
      * As this example only handles one incoming frame with always the same delay and timeout, those values can be set here once for all. */
     dwt_setrxaftertxdelay(POLL_TX_TO_RESP_RX_DLY_UUS);
     dwt_setrxtimeout(RESP_RX_TIMEOUT_UUS);
-
+  
     /* Next can enable TX/RX states output on GPIOs 5 and 6 to help debug, and also TX/RX LEDs
      * Note, in real low power applications the LEDs should not be used. */
     dwt_setlnapamode(DWT_LNA_ENABLE | DWT_PA_ENABLE);
 }
 
 void loop() {
-
   
-        /* Write frame data to DW IC and prepare transmission. See NOTE 7 below. */
-        tx_poll_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
-        dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS_BIT_MASK);
-        dwt_writetxdata(sizeof(tx_poll_msg), tx_poll_msg, 0); /* Zero offset in TX buffer. */
-        dwt_writetxfctrl(sizeof(tx_poll_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
+    /* Write frame data to DW IC and prepare transmission. See NOTE 7 below. */
+    tx_poll_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
+    dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS_BIT_MASK);
+    dwt_writetxdata(sizeof(tx_poll_msg), tx_poll_msg, 0); /* Zero offset in TX buffer. */
+    dwt_writetxfctrl(sizeof(tx_poll_msg), 0, 1); /* Zero offset in TX buffer, ranging. */
+  
+    /* Start transmission, indicating that a response is expected so that reception is enabled automatically after the frame is sent and the delay
+     * set by dwt_setrxaftertxdelay() has elapsed. */
+    dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
+  
+    /* We assume that the transmission is achieved correctly, poll for reception of a frame or error/timeout. See NOTE 8 below. */
+    while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID)) & (SYS_STATUS_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR)))
+    { };
+  
+    /* Increment frame sequence number after transmission of the poll message (modulo 256). */
+    frame_seq_nb++;
+  
+    if (status_reg & SYS_STATUS_RXFCG_BIT_MASK)
+    {
+        process_response();
+    }
+    else
+    {
+        /* Clear RX error/timeout events in the DW IC status register. */
+        dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
+        new_active_ping = 0;
+    }
 
-        /* Start transmission, indicating that a response is expected so that reception is enabled automatically after the frame is sent and the delay
-         * set by dwt_setrxaftertxdelay() has elapsed. */
-        dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
+    filtered_ping=filtered_pings(new_active_ping, active_ping_n_minus_1, active_ping_n_minus_2, active_ping_n_minus_3, active_ping_n_minus_4, active_ping_n_minus_5);
+  
+    update_detected_indicator(filtered_ping);
+  
+    /* Execute a delay between ranging exchanges. */
+    Sleep(RNG_DELAY_MS);
 
-        /* We assume that the transmission is achieved correctly, poll for reception of a frame or error/timeout. See NOTE 8 below. */
-        while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID)) & (SYS_STATUS_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR)))
-        { };
+}
 
-        /* Increment frame sequence number after transmission of the poll message (modulo 256). */
-        frame_seq_nb++;
+void process_response(){
+  
+    uint32_t frame_len;
+    double filtered_delta;
 
-        if (status_reg & SYS_STATUS_RXFCG_BIT_MASK)
+    /* Clear good RX frame event in the DW IC status register. */
+    dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_RXFCG_BIT_MASK);
+
+    /* A frame has been received, read it into the local buffer. */
+    frame_len = dwt_read32bitreg(RX_FINFO_ID) & RXFLEN_MASK;
+    if (frame_len <= sizeof(rx_buffer))
+    {
+        dwt_readrxdata(rx_buffer, frame_len, 0);
+
+        /* Check that the frame is the expected response from the companion "SS TWR responder" example.
+         * As the sequence number field of the frame is not relevant, it is cleared to simplify the validation of the frame. */
+        rx_buffer[ALL_MSG_SN_IDX] = 0;
+        if (memcmp(rx_buffer, rx_resp_msg, ALL_MSG_COMMON_LEN) == 0)
         {
-            uint32_t frame_len;
+            uint32_t poll_tx_ts, resp_rx_ts, poll_rx_ts, resp_tx_ts;
+            int32_t rtd_init, rtd_resp;
+            float clockOffsetRatio ;
 
-            /* Clear good RX frame event in the DW IC status register. */
-            dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_RXFCG_BIT_MASK);
+            /* Retrieve poll transmission and response reception timestamps. See NOTE 9 below. */
+            poll_tx_ts = dwt_readtxtimestamplo32();
+            resp_rx_ts = dwt_readrxtimestamplo32();
 
-            /* A frame has been received, read it into the local buffer. */
-            frame_len = dwt_read32bitreg(RX_FINFO_ID) & RXFLEN_MASK;
-            if (frame_len <= sizeof(rx_buffer))
-            {
-                dwt_readrxdata(rx_buffer, frame_len, 0);
+            /* Read carrier integrator value and calculate clock offset ratio. See NOTE 11 below. */
+            clockOffsetRatio = ((float)dwt_readclockoffset()) / (uint32_t)(1<<26);
 
-                /* Check that the frame is the expected response from the companion "SS TWR responder" example.
-                 * As the sequence number field of the frame is not relevant, it is cleared to simplify the validation of the frame. */
-                rx_buffer[ALL_MSG_SN_IDX] = 0;
-                if (memcmp(rx_buffer, rx_resp_msg, ALL_MSG_COMMON_LEN) == 0)
-                {
-                    uint32_t poll_tx_ts, resp_rx_ts, poll_rx_ts, resp_tx_ts;
-                    int32_t rtd_init, rtd_resp;
-                    float clockOffsetRatio ;
+            /* Get timestamps embedded in response message. */
+            resp_msg_get_ts(&rx_buffer[RESP_MSG_POLL_RX_TS_IDX], &poll_rx_ts);
+            resp_msg_get_ts(&rx_buffer[RESP_MSG_RESP_TX_TS_IDX], &resp_tx_ts);
 
-                    /* Retrieve poll transmission and response reception timestamps. See NOTE 9 below. */
-                    poll_tx_ts = dwt_readtxtimestamplo32();
-                    resp_rx_ts = dwt_readrxtimestamplo32();
+            /* Compute time of flight and distance, using clock offset ratio to correct for differing local and remote clock rates */
+            rtd_init = resp_rx_ts - poll_tx_ts;
+            rtd_resp = resp_tx_ts - poll_rx_ts;
 
-                    /* Read carrier integrator value and calculate clock offset ratio. See NOTE 11 below. */
-                    clockOffsetRatio = ((float)dwt_readclockoffset()) / (uint32_t)(1<<26);
+            tof = ((rtd_init - rtd_resp * (1 - clockOffsetRatio)) / 2.0) * DWT_TIME_UNITS;
+            new_distance = tof * SPEED_OF_LIGHT;
 
-                    /* Get timestamps embedded in response message. */
-                    resp_msg_get_ts(&rx_buffer[RESP_MSG_POLL_RX_TS_IDX], &poll_rx_ts);
-                    resp_msg_get_ts(&rx_buffer[RESP_MSG_RESP_TX_TS_IDX], &resp_tx_ts);
+            /* Display computed distance on LCD. */
+            snprintf(dist_str, sizeof(dist_str), "NEW DIST: %3.2f m", new_distance);
 
-                    /* Compute time of flight and distance, using clock offset ratio to correct for differing local and remote clock rates */
-                    rtd_init = resp_rx_ts - poll_tx_ts;
-                    rtd_resp = resp_tx_ts - poll_rx_ts;
+            test_run_info((unsigned char *)dist_str);
 
-                    tof = ((rtd_init - rtd_resp * (1 - clockOffsetRatio)) / 2.0) * DWT_TIME_UNITS;
-                    new_distance = tof * SPEED_OF_LIGHT;
+            /* Record active ping */
+            new_active_ping = 1;
 
-                    /* Display computed distance on LCD. */
-                    snprintf(dist_str, sizeof(dist_str), "NEW DIST: %3.2f m", new_distance);
+            filtered_delta=filtered_delta_distance(new_distance, distance_n_minus_1, distance_n_minus_2, distance_n_minus_3, distance_n_minus_4, distance_n_minus_5);
 
-                    test_run_info((unsigned char *)dist_str);
+            update_temperature_indicators(filtered_delta);
 
-
-                    filtered_delta=((new_distance+old1_distance)-(old2_distance+old3_distance))/2;
-
-                    Serial.print(filtered_delta);
-
-                    if (filtered_delta < -0.6) {
-                      Serial.println("VV Warmer");
-                      digitalWrite(PIN_WARM1, HIGH);  // turn the LED off
-                      digitalWrite(PIN_WARM2, HIGH);  // turn the LED off
-                      digitalWrite(PIN_WARM3, HIGH);  // turn the LED off
-                      digitalWrite(PIN_COLD1, LOW); // turn the LED on
-                      digitalWrite(PIN_COLD2, LOW); // turn the LED on
-                      digitalWrite(PIN_COLD3, LOW); // turn the LED on
-                    } 
-                    else if (filtered_delta < -0.3) {
-                      Serial.println("v Warmer");
-                      digitalWrite(PIN_WARM1, HIGH);  // turn the LED off
-                      digitalWrite(PIN_WARM2, HIGH);  // turn the LED off
-                      digitalWrite(PIN_WARM3, LOW);  // turn the LED off
-                      digitalWrite(PIN_COLD1, LOW); // turn the LED on
-                      digitalWrite(PIN_COLD2, LOW); // turn the LED on
-                      digitalWrite(PIN_COLD3, LOW); // turn the LED on
-                    } 
-                    else if (filtered_delta < -0.1) {
-                      Serial.println("Warmer");
-                      digitalWrite(PIN_WARM1, HIGH);  // turn the LED off
-                      digitalWrite(PIN_WARM2, LOW);  // turn the LED off
-                      digitalWrite(PIN_WARM3, LOW);  // turn the LED off
-                      digitalWrite(PIN_COLD1, LOW); // turn the LED on
-                      digitalWrite(PIN_COLD2, LOW); // turn the LED on
-                      digitalWrite(PIN_COLD3, LOW); // turn the LED on
-                    } 
-                     else if (filtered_delta > 0.60 )
-                     {
-                      Serial.println("Vv Colder");
-                      digitalWrite(PIN_WARM1, LOW);  // turn the LED off
-                      digitalWrite(PIN_WARM2, LOW);  // turn the LED off
-                      digitalWrite(PIN_WARM3, LOW);  // turn the LED off
-                      digitalWrite(PIN_COLD1, HIGH); // turn the LED on
-                      digitalWrite(PIN_COLD2, HIGH); // turn the LED on
-                      digitalWrite(PIN_COLD3, HIGH); // turn the LED on
-                    }
-                    else if (filtered_delta > 0.3 )
-                     {
-                      Serial.println("V Colder");
-                      digitalWrite(PIN_WARM1, LOW);  // turn the LED off
-                      digitalWrite(PIN_WARM2, LOW);  // turn the LED off
-                      digitalWrite(PIN_WARM3, LOW);  // turn the LED off
-                      digitalWrite(PIN_COLD1, HIGH); // turn the LED on
-                      digitalWrite(PIN_COLD2, HIGH); // turn the LED on
-                      digitalWrite(PIN_COLD3, LOW); // turn the LED on
-
-                    }
-                    else if (filtered_delta > 0.1 )
-                     {
-                      Serial.println("Colder");
-                      digitalWrite(PIN_WARM1, LOW);  // turn the LED off
-                      digitalWrite(PIN_WARM2, LOW);  // turn the LED off
-                      digitalWrite(PIN_WARM3, LOW);  // turn the LED off
-                      digitalWrite(PIN_COLD1, HIGH); // turn the LED on
-                      digitalWrite(PIN_COLD2, LOW); // turn the LED on
-                      digitalWrite(PIN_COLD3, LOW); // turn the LED on
-                    }else 
-                     {
-                      Serial.println("Neutral");
-                      digitalWrite(PIN_WARM1, LOW);  // turn the LED off
-                      digitalWrite(PIN_WARM2, LOW);  // turn the LED off
-                      digitalWrite(PIN_WARM3, LOW);  // turn the LED off
-                      digitalWrite(PIN_COLD1, LOW); // turn the LED on
-                      digitalWrite(PIN_COLD2, LOW); // turn the LED on
-                      digitalWrite(PIN_COLD3, LOW); // turn the LED on
-
-                    }
-
-                    old3_distance = old2_distance;
-                    old2_distance = old1_distance;
-                    old1_distance = new_distance;
-                    
-                    digitalWrite(PIN_DETECT, HIGH); // turn the LED on
-
-                 
-                }
-            }
+            shift_values();
+        
         }
-        else
-        {
-            /* Clear RX error/timeout events in the DW IC status register. */
-            dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
-            digitalWrite(PIN_DETECT, LOW); // turn the LED on
+    }
+  
+}
 
-        }
+void update_detected_indicator(double filtered_ping){
+     
+     if (filtered_ping > PACKET_THRESHOLD){
+         digitalWrite(PIN_DETECT, HIGH); // turn the LED on
+     } 
+     else {
+         digitalWrite(PIN_DETECT, LOW); // turn the LED on
+         Serial.println("Dropped packets");
+     }
+}
 
-        /* Execute a delay between ranging exchanges. */
-        Sleep(RNG_DELAY_MS);
+void update_temperature_indicators(double filtered_delta){
+  
+    if (filtered_delta < WARM_THRESHOLD_3) {
+      digitalWrite(PIN_WARM1, HIGH);  // turn the LED off
+      digitalWrite(PIN_WARM2, HIGH);  // turn the LED off
+      digitalWrite(PIN_WARM3, HIGH);  // turn the LED off
+      colder_led_off();
+    } 
+    else if (filtered_delta < WARM_THRESHOLD_2) {
+      digitalWrite(PIN_WARM1, HIGH);  // turn the LED off
+      digitalWrite(PIN_WARM2, HIGH);  // turn the LED off
+      digitalWrite(PIN_WARM3, LOW);  // turn the LED off
+      colder_led_off();
+    } 
+    else if (filtered_delta < WARM_THRESHOLD_1) {
+      digitalWrite(PIN_WARM1, HIGH);  // turn the LED off
+      digitalWrite(PIN_WARM2, LOW);  // turn the LED off
+      digitalWrite(PIN_WARM3, LOW);  // turn the LED off
+      colder_led_off();
+    } 
+     else if (filtered_delta > COLD_THRESHOLD_3 ) {
+      warmer_led_off();
+      digitalWrite(PIN_COLD1, HIGH); // turn the LED on
+      digitalWrite(PIN_COLD2, HIGH); // turn the LED on
+      digitalWrite(PIN_COLD3, HIGH); // turn the LED on
+    }
+    else if (filtered_delta > COLD_THRESHOLD_2 ) {
+      warmer_led_off();
+      digitalWrite(PIN_COLD1, HIGH); // turn the LED on
+      digitalWrite(PIN_COLD2, HIGH); // turn the LED on
+      digitalWrite(PIN_COLD3, LOW); // turn the LED on
+    }
+    else if (filtered_delta > COLD_THRESHOLD_1 ) {
+      warmer_led_off();
+      digitalWrite(PIN_COLD1, HIGH); // turn the LED on
+      digitalWrite(PIN_COLD2, LOW); // turn the LED on
+      digitalWrite(PIN_COLD3, LOW); // turn the LED on
+    }
+    else {
+      warmer_led_off();
+      colder_led_off();
+    }
+  
+}
 
+void shift_values(){
+  
+    distance_n_minus_5 = distance_n_minus_4;
+    distance_n_minus_4 = distance_n_minus_3;
+    distance_n_minus_3 = distance_n_minus_2;
+    distance_n_minus_2 = distance_n_minus_1;
+    distance_n_minus_1 = new_distance;
+
+    active_ping_n_minus_5 = active_ping_n_minus_4;
+    active_ping_n_minus_4 = active_ping_n_minus_3;
+    active_ping_n_minus_3 = active_ping_n_minus_2;
+    active_ping_n_minus_2 = active_ping_n_minus_1;
+    active_ping_n_minus_1 = new_active_ping;
+  
+}
+
+double filtered_delta_distance(float d1, float d2, float d3, float d4, float d5, float d6){
+   double filtered_delta=((0.2*(d1-d2))+(0.2*(d2-d3))+(0.2*(d3-d4))+(0.2*(d4-d5))+(0.2*(d5-d6)))*3.5;
+   return filtered_delta;
+}
+
+double filtered_pings(float d1, float d2, float d3, float d4, float d5, float d6){
+   double filtered_ping=((0.35*(d1))+(0.25*(d2))+(0.2*(d3))+(0.125*(d4))+(0.075*(d5)));
+   return filtered_ping;
+}
+
+void colder_led_off(){
+    digitalWrite(PIN_COLD1, LOW); // turn the LED on
+    digitalWrite(PIN_COLD2, LOW); // turn the LED on
+    digitalWrite(PIN_COLD3, LOW); // turn the LED on
+}
+
+void warmer_led_off(){
+    digitalWrite(PIN_WARM1, LOW); // turn the LED on
+    digitalWrite(PIN_WARM2, LOW); // turn the LED on
+    digitalWrite(PIN_WARM3, LOW); // turn the LED on
 }
 
 /*****************************************************************************************************************************************************
