@@ -1,6 +1,6 @@
 #include "dw3000.h"
 
-#define APP_NAME "SS TWR RESP v1.0"
+#define APP_NAME "Hidden node"
 
 // connection pins
 const uint8_t PIN_RST = 27; // reset pin
