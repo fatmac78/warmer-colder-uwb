@@ -14,7 +14,12 @@ const uint8_t PIN_WARM3 = 32; // warmer level 3 LED pin
 const uint8_t PIN_COLD1 = 2; // colder level 1 LED pin     
 const uint8_t PIN_COLD2 = 12; // colder level 2 LED pin     
 const uint8_t PIN_COLD3 = 13; // colder level 3 LED pin     
-const uint8_t PIN_DETECT = 25; // hidden node detected LED     
+const uint8_t PIN_DETECT = 25; // hidden node detected LED    
+const uint8_t PIN_NEAR1 = 22; // warmer level 1 LED pin
+const uint8_t PIN_NEAR2 = 21; // warmer level 1 LED pin
+const uint8_t PIN_NEAR3 = 26; // warmer level 1 LED pin
+const uint8_t PIN_NEAR4 = 15; // warmer level 1 LED pin
+
 
 // trigger thresholds
 const double WARM_THRESHOLD_1 = -0.1;
@@ -127,6 +132,11 @@ void setup() {
     pinMode(PIN_COLD2, OUTPUT);
     pinMode(PIN_COLD3, OUTPUT);
     pinMode(PIN_DETECT, OUTPUT);
+    pinMode(PIN_NEAR1, OUTPUT);
+    pinMode(PIN_NEAR2, OUTPUT);
+    pinMode(PIN_NEAR3, OUTPUT);
+    pinMode(PIN_NEAR4, OUTPUT);
+
     
     UART_init();
     test_run_info((unsigned char *)APP_NAME);
@@ -270,6 +280,40 @@ void process_response(){
             update_temperature_indicators(filtered_delta);
 
             shift_values();
+
+            if (new_distance > 1.0){
+                Serial.println("Near 1");
+
+                digitalWrite(PIN_NEAR1, HIGH);  // turn the LED off
+            }
+            else {
+                digitalWrite(PIN_NEAR1, LOW);  // turn the LED off
+            }
+            if (new_distance > 2.0){
+                Serial.println("Near 2");
+
+                digitalWrite(PIN_NEAR2, HIGH);  // turn the LED off
+            }
+            else {
+                digitalWrite(PIN_NEAR2, LOW);  // turn the LED off
+            }
+            if (new_distance > 3.0){
+                Serial.println("Near 3");
+
+                digitalWrite(PIN_NEAR3, HIGH);  // turn the LED off
+            }
+            else {
+                digitalWrite(PIN_NEAR3, LOW);  // turn the LED off
+            }
+               if (new_distance > 4.0){
+                Serial.println("Near 4");
+
+                digitalWrite(PIN_NEAR4, HIGH);  // turn the LED off
+            }
+            else {
+                digitalWrite(PIN_NEAR4, LOW);  // turn the LED off
+            }
+            
         
         }
     }
